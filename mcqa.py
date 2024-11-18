@@ -27,18 +27,24 @@ def parse_arguments():
     # Voting arguments
     parser.add_argument('--num_forward_passes', type=int, default=5, help='Number of forward passes for majority voting')
     parser.add_argument('--min_probability_threshold', type=float, default=0.1, help='Minimum probability threshold for a prediction to be considered')
-    
+
     # Temperature argument
     parser.add_argument('--temperature', type=float, default=0.6, help='Sampling temperature. Lower values make the model more deterministic.')
-    
+
     # Other arguments
     parser.add_argument('--max_length', type=int, default=512, help='Maximum sequence length')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
 
+    # New argument for specifying GPU
+    parser.add_argument('--gpu', type=int, default=None, help='GPU index to use (e.g., 0, 1, 2, ...). If None, use default device.')
+
     args = parser.parse_args()
 
-    # Auto-detect device if not specified
-    if args.device is None:
+    # Set device
+    if args.gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     return args
@@ -143,6 +149,8 @@ def get_next_token_probabilities(model, tokenizer, prompt, options, device, temp
         option_tokens = {}
         for opt in options:
             tokens = tokenizer.encode(f" {opt}")
+            if len(tokens) < 2:
+                raise ValueError(f"Option '{opt}' is not properly tokenized.")
             option_tokens[opt] = tokens[1]
 
         # Extract logits only for the option tokens
@@ -191,6 +199,7 @@ def majority_vote(all_predictions, min_probability_threshold):
 
     return majority_pred, confidence, best_rationale
 
+
 def save_results(results, output_file):
     """
     Save results to JSONL file.
@@ -228,8 +237,11 @@ def main():
         model = LlamaForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.float16 if args.device == "cuda" else torch.float32,
-            device_map="auto"
+            device_map="auto"  # 自动分配设备
         )
+        # 如果不使用 device_map，可以手动移动模型到设备
+        # model.to(args.device)
+        model.eval()
         tokenizer = LlamaTokenizerFast.from_pretrained(model_path, truncation_side="left")
     except Exception as e:
         print(f"Error loading model: {e}")
@@ -248,7 +260,7 @@ def main():
             all_predictions = []
             for _ in range(args.num_forward_passes):
                 probs, rationale = get_next_token_probabilities(
-                    model, tokenizer, prompt, options, args.device)
+                    model, tokenizer, prompt, options, args.device, temperature=args.temperature)
                 all_predictions.append((probs, rationale))
 
             # Perform majority voting
